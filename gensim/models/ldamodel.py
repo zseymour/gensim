@@ -650,7 +650,7 @@ class LdaModel(interfaces.TransformationABC):
         # compensate likelihood for when `corpus` above is only a sample of the whole corpus
         score *= subsample_ratio
 
-        # E[log p(beta | eta) - log q (beta | lambda)]; assumes eta is a scalar
+        # E[log p(beta | eta) - log q (beta | lambda)]
         score += numpy.sum((self.eta - _lambda) * Elogbeta)
         score += numpy.sum(gammaln(_lambda) - gammaln(self.eta))
 

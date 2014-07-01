@@ -233,8 +233,8 @@ class TestLdaModel(unittest.TestCase):
                 # check that the word system in the topic we seeded, got a high weight,
                 # and the word 'trees' (the main word in the other topic) a low weight --
                 # and vice versa for the other topic (which we didn't seed with 'system')
-                result = [[topics[topic].get(u'system',0), topics[topic].get(u'trees',0)],
-                          [topics[1-topic].get(u'system',0), topics[1-topic].get(u'trees',0)]]
+                result = [[topics[topic].get(u'system', 0), topics[topic].get(u'trees', 0)],
+                          [topics[1 - topic].get(u'system', 0), topics[1 - topic].get(u'trees', 0)]]
                 expected = [[0.385, 0.022],
                             [0.025, 0.157]]
                 passed = numpy.allclose(result, expected, atol=1e-2)
