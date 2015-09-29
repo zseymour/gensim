@@ -72,6 +72,7 @@ import logging
 import sys
 import os
 import heapq
+import argparse
 from timeit import default_timer
 from copy import deepcopy
 from collections import defaultdict
@@ -95,6 +96,12 @@ from six.moves import xrange
 from types import GeneratorType
 
 logger = logging.getLogger("gensim.models.visualword2vec")
+
+
+CAFFE_ROOT = "/home/zseymou1/caffe.nobackup"
+MODEL_FILE = CAFFE_ROOT + "/models/bvlc_reference_caffenet/deploy.prototxt"
+PRETRAINED = CAFFE_ROOT + "/models/bvlc_reference_caffenet/bvlc_reference_caffenet.caffemodel"
+IMAGE_DIR = "/data/zseymou1/ilsvrc2012/val"
 
 try:
     from gensim.models.visualword2vec_inner import train_sentence_sg, FAST_VERSION
@@ -246,10 +253,11 @@ class VisualWord2Vec(utils.SaveLoad):
 
     """
     def __init__(
-            self, sentences=None, size=100, alpha=0.025, window=5, min_count=5,
-            max_vocab_size=None, sample=0, seed=1, workers=1, min_alpha=0.0001,
-            sg=1, hs=1, negative=0, cbow_mean=0, hashfxn=hash, iter=1, null_word=0,
-            trim_rule=None, sorted_vocab=1):
+            self, sentences=None, image_dir=".", word_size=200, image_size=4096, multimodal_size=1000, 
+            number_of_images=100, alpha=0.025, window=5, min_count=5,sample=0, seed=1, workers=1, 
+            recalculate_features=True, image_features="features.pkl", min_alpha=0.0001, sg=1, hs=1, 
+            negative=0, cbow_mean=0, vocab_file="vocab.pkl", testsplit=False, hashfxn=hash, iter=1, 
+            null_word=0, trim_rule=None, sorted_vocab=1):
         """
         Initialize the model from an iterable of `sentences`. Each sentence is a
         list of words (unicode strings) that will be used for training.
@@ -313,8 +321,8 @@ class VisualWord2Vec(utils.SaveLoad):
         self.index2word = []  # map from a word's matrix index (int) to word (string)
         self.sg = int(sg)
         self.cum_table = None  # for negative sampling
-        self.vector_size = int(size)
-        self.layer1_size = int(size)
+        self.vector_size = int(multimodal_size)
+        self.layer1_size = int(multimodal_size)
         if size % 4 != 0:
             logger.warning("consider setting layer size to a multiple of 4 for greater performance")
         self.alpha = float(alpha)
@@ -335,8 +343,20 @@ class VisualWord2Vec(utils.SaveLoad):
         self.train_count = 0
         self.total_train_time = 0
         self.sorted_vocab = sorted_vocab
-
-        if sentences is not None:
+        
+        self.image_dir = image_dir
+        self.image_size = int(image_size)
+        self.multimodal_size = int(multimodal_size)
+        self.number_of_images = int(number_of_images)
+        self.recalculate_images = recalculate_features
+        self.image_features = image_features
+        
+        if isinstance(sentences, PickledVocabCorpus):
+            self.vocab = sentences.vocab
+            self.index2word = sentences.indices
+            self.finalize_vocab()
+            self.train(sentences.corpus)
+        elif sentences is not None:
             if isinstance(sentences, GeneratorType):
                 raise TypeError("You can't pass a generator as the sentences argument. Try an iterator.")
             self.build_vocab(sentences, trim_rule=trim_rule)
@@ -865,7 +885,9 @@ class VisualWord2Vec(utils.SaveLoad):
         self.syn0norm = None
 
         self.syn0_lockf = ones(len(self.vocab), dtype=REAL)  # zeros suppress learning
-
+        
+        self.image_matrix = array(utils.load('data/input/image_mapping.pkl'), dtype=REAL)
+        
     def seeded_vector(self, seed_string):
         """Create one 'random' vector (but deterministic by seed_string)"""
         # Note: built-in hash() may vary by Python version or even (in Py3.x) per launch
@@ -1438,6 +1460,15 @@ class Text8Corpus(object):
                 while len(sentence) >= self.max_sentence_length:
                     yield sentence[:self.max_sentence_length]
                     sentence = sentence[self.max_sentence_length:]
+                    
+class PickledVocabCorpus(object):
+    """
+    Loads a previously read and Huffman encoded vocabulary (drawn from the given corpus) from the Pickle file
+    """
+    def __init__(self, fname, corpus):
+        self.vocab = pickle.load(open(fname + ".pkl",'rb'))
+        self.indices = pickle.load(open(fname + ".index.pkl", 'rb'))
+        self.corpus = corpus
 
 
 class LineSentence(object):
@@ -1497,25 +1528,36 @@ if __name__ == "__main__":
 
     # check and process cmdline input
     program = os.path.basename(sys.argv[0])
-    if len(sys.argv) < 2:
-        print(globals()['__doc__'] % locals())
-        sys.exit(1)
-    infile = sys.argv[1]
-    from gensim.models.word2vec import Word2Vec  # avoid referencing __main__ in pickle
+    parser = argparse.ArgumentParser(prog=program, description="Multimodal skip-gram model using multimodal pseudowords.")
+    parser.add_argument('vocab',  help="File containing vocabularly in Text8 format")
+    parser.add_argument('--outfile', dest='outfile', help="File prefix to store output")
+    parser.add_argument('--questions', dest='questions', help="File containing analogy pairs")
+    parser.add_argument('--workers', dest='workers', type=int, default=8, help="Number of threads to run")
+    parser.add_argument('--size', dest="size", type=int, default=300, help="Size of multimodal embeddings")
+    parser.add_argument('--image', dest="image", default="data/input/ilsvrc2012.features.pkl", help="File containing precalculated image features")
+    #parser.add_argument('--test-blas', dest="test", action="store_true", help="Run the BLAS test.")
+    args = parser.parse_args()
+
+    infile = args.vocab
+    if args.outfile:
+        vocab_file = args.outfile
+    else:
+        vocab_file = infile
+    
+    from visualword2vec import VisualWord2Vec, PickledVocabCorpus  # avoid referencing __main__ in pickle
 
     seterr(all='raise')  # don't ignore numpy errors
 
-    # model = Word2Vec(LineSentence(infile), size=200, min_count=5, workers=4)
-    model = Word2Vec(Text8Corpus(infile), size=200, min_count=5, workers=1)
+    model = VisualWord2Vec(sentences=PickledVocabCorpus(vocab_file + ".vocab", Text8Corpus(infile)), image_dir=IMAGE_DIR, multimodal_size=args.size, window=5,
+                           min_count=5, sample=1e-3, workers=args.workers, recalculate_features=False, image_features=args.image, vocab_file=vocab_file + ".vocab", testsplit=False)
 
-    if len(sys.argv) > 3:
-        outfile = sys.argv[3]
+    if args.outfile:
+        outfile = args.outfile
         model.save(outfile + '.model')
         model.save_word2vec_format(outfile + '.model.bin', binary=True)
         model.save_word2vec_format(outfile + '.model.txt', binary=False)
 
-    if len(sys.argv) > 2:
-        questions_file = sys.argv[2]
-        model.accuracy(sys.argv[2])
+    if args.questions:
+        model.accuracy(args.questions)
 
-    logging.info("finished running %s", program)
+    logging.info("finished running %s" % program)
